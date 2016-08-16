@@ -1,28 +1,8 @@
---- crash.orig/help.c	2016-08-16 08:21:15.006006602 +0300
-+++ crash/help.c	2016-08-16 10:06:45.158031886 +0300
-@@ -5254,6 +5254,9 @@
- "               \"struct.member.member\" or \"struct.member[index]\"; embedded",
- "               member specifications may extend beyond one level deep by ",
- "               expressing the argument as \"struct.member.member.member...\".",
-+"    -S struct  Do exactly the same thing as `-s`, but instead of parsing gdb output",
-+"               it reads value from memory, therefore it works much faster for"
-+"               1-, 2-, 4-, and 8-bytes fields."
- "    -l offset  Only used in conjunction with -s, if the start address argument",
- "               is a pointer to an embedded list head (or any other similar list",
- "               linkage structure whose first member points to the next linkage",
-@@ -5600,6 +5603,9 @@
- "             or \"struct.member[index]\"; embedded member specifications may",
- "             extend beyond one level deep by expressing the struct argument as", 
- "             \"struct.member.member.member...\".",
-+"  -S struct  Do exactly the same thing as `-s`, but instead of parsing gdb output",
-+"             it reads value from memory, therefore it works much faster for"
-+"             1-, 2-, 4-, and 8-bytes fields."
- "         -x  Override default output format with hexadecimal format.",
- "         -d  Override default output format with decimal format.",
- "         -p  Display the node's position information, showing the relationship",
---- crash.orig/defs.h	2016-08-16 08:21:14.998006602 +0300
-+++ crash/defs.h	2016-08-16 10:05:49.286031663 +0300
-@@ -2381,6 +2381,15 @@
+diff --git a/defs.h b/defs.h
+index d6691a3..216f7a9 100644
+--- a/defs.h
++++ b/defs.h
+@@ -2381,6 +2381,15 @@ struct datatype_member {        /* minimal definition of a structure/union */
  
  #define union_name struct_name
  
@@ -38,7 +18,7 @@
  struct list_data {             /* generic structure used by do_list() to walk */
          ulong flags;           /* through linked lists in the kernel */
          ulong start;
-@@ -2388,13 +2397,14 @@
+@@ -2388,13 +2397,14 @@ struct list_data {             /* generic structure used by do_list() to walk */
  	long list_head_offset;
          ulong end;
  	ulong searchfor;
@@ -55,7 +35,7 @@
  };
  #define LIST_OFFSET_ENTERED  (VERBOSE << 1)
  #define LIST_START_ENTERED   (VERBOSE << 2)
-@@ -2413,9 +2423,10 @@
+@@ -2413,9 +2423,10 @@ struct tree_data {
  	ulong flags;
  	ulong start;
  	long node_member_offset;
@@ -68,9 +48,35 @@
  };
  
  #define TREE_ROOT_OFFSET_ENTERED  (VERBOSE << 1)
---- crash.orig/tools.c	2016-08-16 08:21:15.022006602 +0300
-+++ crash/tools.c	2016-08-16 10:29:33.850037353 +0300
-@@ -23,10 +23,12 @@
+diff --git a/help.c b/help.c
+index dd1a582..00e7e53 100644
+--- a/help.c
++++ b/help.c
+@@ -5254,6 +5254,9 @@ char *help__list[] = {
+ "               \"struct.member.member\" or \"struct.member[index]\"; embedded",
+ "               member specifications may extend beyond one level deep by ",
+ "               expressing the argument as \"struct.member.member.member...\".",
++"    -S struct  Do exactly the same thing as `-s`, but instead of parsing gdb output",
++"               it reads value from memory, therefore it works much faster for"
++"               1-, 2-, 4-, and 8-bytes fields."
+ "    -l offset  Only used in conjunction with -s, if the start address argument",
+ "               is a pointer to an embedded list head (or any other similar list",
+ "               linkage structure whose first member points to the next linkage",
+@@ -5600,6 +5603,9 @@ char *help_tree[] = {
+ "             or \"struct.member[index]\"; embedded member specifications may",
+ "             extend beyond one level deep by expressing the struct argument as", 
+ "             \"struct.member.member.member...\".",
++"  -S struct  Do exactly the same thing as `-s`, but instead of parsing gdb output",
++"             it reads value from memory, therefore it works much faster for"
++"             1-, 2-, 4-, and 8-bytes fields."
+ "         -x  Override default output format with hexadecimal format.",
+ "         -d  Override default output format with decimal format.",
+ "         -p  Display the node's position information, showing the relationship",
+diff --git a/tools.c b/tools.c
+index 2c3aab9..ce70613 100644
+--- a/tools.c
++++ b/tools.c
+@@ -23,10 +23,12 @@ static long alloc_hq_entry(void);
  struct hq_entry;
  static void dealloc_hq_entry(struct hq_entry *);
  static void show_options(void);
@@ -85,7 +91,7 @@
  
  /*
   *  General purpose error reporting routine.  Type INFO prints the message
-@@ -3229,7 +3231,7 @@
+@@ -3229,7 +3231,7 @@ cmd_list(void)
  	BZERO(ld, sizeof(struct list_data));
  	struct_list_offset = 0;
  
@@ -94,7 +100,7 @@
                  switch(c)
  		{
  		case 'H':
-@@ -3246,9 +3248,14 @@
+@@ -3246,9 +3248,14 @@ cmd_list(void)
  			break;
  
  		case 's':
@@ -112,7 +118,7 @@
  			break;
  
  		case 'l':
-@@ -3313,13 +3320,10 @@
+@@ -3313,13 +3320,10 @@ cmd_list(void)
  		cmd_usage(pc->curcmd, SYNOPSIS);
  	}
  
@@ -128,7 +134,7 @@
  		cmd_usage(pc->curcmd, SYNOPSIS);
  	}
  
-@@ -3479,8 +3483,6 @@
+@@ -3479,8 +3483,6 @@ next_arg:
  	c = do_list(ld);
  	hq_close();
  
@@ -137,7 +143,7 @@
  }
  
  
-@@ -3493,8 +3495,9 @@
+@@ -3493,8 +3495,9 @@ do_list(struct list_data *ld)
  {
  	ulong next, last, first;
  	ulong searchfor, readflag;
@@ -148,7 +154,7 @@
  
  	if (CRASHDEBUG(1)) {
  		others = 0;
-@@ -3531,11 +3534,16 @@
+@@ -3531,11 +3534,16 @@ do_list(struct list_data *ld)
  		console("  list_head_offset: %ld\n", ld->list_head_offset);
  		console("               end: %lx\n", ld->end);
  		console("         searchfor: %lx\n", ld->searchfor);
@@ -170,7 +176,7 @@
  		console("            header: %s\n", ld->header);
  		console("          list_ptr: %lx\n", (ulong)ld->list_ptr);
  		console("     callback_func: %lx\n", (ulong)ld->callback_func);
-@@ -3584,20 +3592,15 @@
+@@ -3584,20 +3592,15 @@ do_list(struct list_data *ld)
  		if (ld->flags & VERBOSE) {
  			fprintf(fp, "%lx\n", next - ld->list_head_offset);
  
@@ -198,7 +204,7 @@
  			}
  		}
  
-@@ -3689,41 +3692,20 @@
+@@ -3689,41 +3692,20 @@ do_list(struct list_data *ld)
   *            struct.member1,member2,member3
   */
  void
@@ -252,7 +258,7 @@
  }
  
  #define RADIXTREE_REQUEST (0x1)
-@@ -3745,7 +3727,7 @@
+@@ -3745,7 +3727,7 @@ cmd_tree()
  	td = &tree_data;
  	BZERO(td, sizeof(struct tree_data));
  
@@ -261,7 +267,7 @@
  		switch (c)
  		{
  		case 't':
-@@ -3799,9 +3781,14 @@
+@@ -3799,9 +3781,14 @@ cmd_tree()
  			break;
  
  		case 's':
@@ -279,7 +285,7 @@
  			break;
  
  		case 'p':
-@@ -3878,13 +3865,6 @@
+@@ -3878,13 +3865,6 @@ next_arg:
  		cmd_usage(pc->curcmd, SYNOPSIS);
  	}
  
@@ -293,7 +299,7 @@
  	if (!(td->flags & TREE_NODE_POINTER))
  		td->start = td->start + root_offset;
  
-@@ -3916,7 +3896,7 @@
+@@ -3916,7 +3896,7 @@ next_arg:
  			td->flags & TREE_NODE_POINTER ? "yes" : "no");
  		fprintf(fp, "             start: %lx\n", td->start);
  		fprintf(fp, "node_member_offset: %ld\n", td->node_member_offset);
@@ -302,7 +308,7 @@
  		fprintf(fp, "             count: %d\n", td->count);
  	}
  
-@@ -3929,15 +3909,62 @@
+@@ -3929,15 +3909,62 @@ next_arg:
  	else
  		do_rbtree(td);
  	hq_close();
@@ -368,7 +374,7 @@
  int
  do_rdtree(struct tree_data *td)
  {
-@@ -4051,27 +4078,18 @@
+@@ -4051,27 +4078,18 @@ rdtree_iteration(ulong node_p, struct tree_data *td, char *ppos, ulong indexnum,
  			if (td->flags & TREE_POSITION_DISPLAY)
  				fprintf(fp, "  position: %s/%d\n", pos, index);
  
@@ -402,7 +408,7 @@
  			}
  		} else 
  			rdtree_iteration(slot, td, pos, index, height-1);
-@@ -4126,7 +4144,6 @@
+@@ -4126,7 +4144,6 @@ rbtree_iteration(ulong node_p, struct tree_data *td, char *pos)
  	if (td->flags & TREE_POSITION_DISPLAY)
  		fprintf(fp, "  position: %s\n", pos);
  
@@ -410,7 +416,7 @@
  		if (td->flags & TREE_STRUCT_RADIX_10)
  			print_radix = 10;
  		else if (td->flags & TREE_STRUCT_RADIX_16)
-@@ -4134,17 +4151,12 @@
+@@ -4134,17 +4151,12 @@ rbtree_iteration(ulong node_p, struct tree_data *td, char *pos)
  		else
  			print_radix = 0;
  
@@ -434,7 +440,7 @@
  	}
  
  	readmem(node_p+OFFSET(rb_node_rb_left), KVADDR, &left_p,
-@@ -4159,40 +4171,31 @@
+@@ -4159,40 +4171,31 @@ rbtree_iteration(ulong node_p, struct tree_data *td, char *pos)
  	rbtree_iteration(right_p, td, right_pos);		
  }
  
@@ -474,7 +480,7 @@
 +		uint16_t v16; uint8_t v8;
 +	} v;
 +	char fmt[BUFSIZE];
-+ 
++
 +	if (!readmem(addr, KVADDR, &v, width,
 +	    "structure value", RETURN_ON_ERROR | QUIET)) {
 +		error(INFO, "cannot access field: %s at %lx\n", name, addr);
@@ -485,7 +491,7 @@
 +		 (width == 8 ? "l" : ""),
 +		 (radix == 16 ? "x" : "u" )
 +		);
-+ 
++
 +	switch (width) {
 +		case 1: fprintf(fp, fmt, name, v.v8); break;
 +		case 2: fprintf(fp, fmt, name, v.v16); break;
