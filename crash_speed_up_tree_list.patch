@@ -1,50 +1,35 @@
 diff --git a/defs.h b/defs.h
-index d6691a3..216f7a9 100644
+index d6691a3..f1bb4e2 100644
 --- a/defs.h
 +++ b/defs.h
-@@ -2381,6 +2381,15 @@ struct datatype_member {        /* minimal definition of a structure/union */
+@@ -2380,6 +2380,12 @@ struct datatype_member {        /* minimal definition of a structure/union */
+ };
  
  #define union_name struct_name
- 
-+enum fast_or_fancy { FAST, FANCY };
 +struct struct_req_entry {
 +	char *arg, *name;
 +	char **member, *width;
 +	short *offset;
 +	unsigned char count;
-+	enum fast_or_fancy ff;
 +};
-+
+ 
  struct list_data {             /* generic structure used by do_list() to walk */
          ulong flags;           /* through linked lists in the kernel */
-         ulong start;
-@@ -2388,13 +2397,14 @@ struct list_data {             /* generic structure used by do_list() to walk */
- 	long list_head_offset;
-         ulong end;
- 	ulong searchfor;
--	char **structname;
--	int structname_args;
- 	char *header;
- 	ulong *list_ptr;
+@@ -2395,6 +2401,8 @@ struct list_data {             /* generic structure used by do_list() to walk */
  	int (*callback_func)(void *, void *); 
  	void *callback_data;
  	long struct_list_offset;
-+	int count;
 +	int entries;
 +	struct struct_req_entry *e[8];
  };
  #define LIST_OFFSET_ENTERED  (VERBOSE << 1)
  #define LIST_START_ENTERED   (VERBOSE << 2)
-@@ -2413,9 +2423,10 @@ struct tree_data {
- 	ulong flags;
- 	ulong start;
- 	long node_member_offset;
--	char **structname;
--	int structname_args;
+@@ -2416,6 +2424,8 @@ struct tree_data {
+ 	char **structname;
+ 	int structname_args;
  	int count;
 +	int entries;
 +	struct struct_req_entry *e[8];
-+
  };
  
  #define TREE_ROOT_OFFSET_ENTERED  (VERBOSE << 1)
@@ -73,25 +58,20 @@ index dd1a582..00e7e53 100644
  "         -d  Override default output format with decimal format.",
  "         -p  Display the node's position information, showing the relationship",
 diff --git a/tools.c b/tools.c
-index 2c3aab9..ce70613 100644
+index 2c3aab9..8466408 100644
 --- a/tools.c
 +++ b/tools.c
-@@ -23,10 +23,12 @@ static long alloc_hq_entry(void);
- struct hq_entry;
- static void dealloc_hq_entry(struct hq_entry *);
- static void show_options(void);
--static void dump_struct_members(struct list_data *, int, ulong);
+@@ -27,6 +27,9 @@ static void dump_struct_members(struct list_data *, int, ulong);
  static void rbtree_iteration(ulong, struct tree_data *, char *);
  static void rdtree_iteration(ulong, struct tree_data *, char *, ulong, uint);
--static void dump_struct_members_for_tree(struct tree_data *, int, ulong);
-+static void dump_struct_members(struct struct_req_entry *, int, ulong);
-+static struct struct_req_entry *fill_member_offsets(char *);
+ static void dump_struct_members_for_tree(struct tree_data *, int, ulong);
 +static void print_value(char *, ulong, short, unsigned int);
-+
++static struct struct_req_entry *fill_member_offsets(char *);
++static void dump_struct_members_fast(struct struct_req_entry *, int, ulong);
  
  /*
   *  General purpose error reporting routine.  Type INFO prints the message
-@@ -3229,7 +3231,7 @@ cmd_list(void)
+@@ -3229,7 +3232,7 @@ cmd_list(void)
  	BZERO(ld, sizeof(struct list_data));
  	struct_list_offset = 0;
  
@@ -100,227 +80,54 @@ index 2c3aab9..ce70613 100644
                  switch(c)
  		{
  		case 'H':
-@@ -3246,9 +3248,14 @@ cmd_list(void)
+@@ -3251,6 +3254,14 @@ cmd_list(void)
+ 			hq_enter((ulong)optarg);
  			break;
  
- 		case 's':
--			if (ld->structname_args++ == 0) 
--				hq_open();
--			hq_enter((ulong)optarg);
 +		case 'S':
 +			if (ld->entries == 8)
 +				error(WARNING, "Too many `-S` arguments."
 +				     " Ignoring argument: '%s'\n", optarg);
-+			else {
-+				ld->e[ld->entries] = fill_member_offsets(optarg);
-+				ld->e[ld->entries++]->ff = (c == 's' ? FANCY : FAST);
-+			}
- 			break;
- 
++			else
++				ld->e[ld->entries++] = fill_member_offsets(optarg);
++			break;
++
  		case 'l':
-@@ -3313,13 +3320,10 @@ cmd_list(void)
- 		cmd_usage(pc->curcmd, SYNOPSIS);
- 	}
- 
--	if (ld->structname_args) {
--		ld->structname = (char **)GETBUF(sizeof(char *) * ld->structname_args);
--		retrieve_list((ulong *)ld->structname, ld->structname_args); 
--		hq_close(); 
-+	if (ld->entries) {      
+                         if (IS_A_NUMBER(optarg))
+                                 struct_list_offset = stol(optarg,
+@@ -3318,8 +3329,10 @@ cmd_list(void)
+ 		retrieve_list((ulong *)ld->structname, ld->structname_args); 
+ 		hq_close(); 
  		ld->struct_list_offset = struct_list_offset;
++	} else if (ld->entries) {
++		ld->struct_list_offset = struct_list_offset;
  	} else if (struct_list_offset) {
 -		error(INFO, "-l option can only be used with -s option\n");
-+		error(INFO, "-l option can only be used with -s or -S options\n");
++		error(INFO, "-l option can only be used with -s or -S option\n");
  		cmd_usage(pc->curcmd, SYNOPSIS);
  	}
  
-@@ -3479,8 +3483,6 @@ next_arg:
- 	c = do_list(ld);
- 	hq_close();
- 
--        if (ld->structname_args)
--		FREEBUF(ld->structname);
+@@ -3483,6 +3496,99 @@ next_arg:
+ 		FREEBUF(ld->structname);
  }
  
- 
-@@ -3493,8 +3495,9 @@ do_list(struct list_data *ld)
- {
- 	ulong next, last, first;
- 	ulong searchfor, readflag;
--	int i, count, others, close_hq_on_return;
-+	int i, j, count, others, close_hq_on_return;
- 	unsigned int radix;
-+	char b[BUFSIZE];
- 
- 	if (CRASHDEBUG(1)) {
- 		others = 0;
-@@ -3531,11 +3534,16 @@ do_list(struct list_data *ld)
- 		console("  list_head_offset: %ld\n", ld->list_head_offset);
- 		console("               end: %lx\n", ld->end);
- 		console("         searchfor: %lx\n", ld->searchfor);
--		console("   structname_args: %lx\n", ld->structname_args);
--		if (!ld->structname_args)
--			console("        structname: (unused)\n");
--		for (i = 0; i < ld->structname_args; i++)	
--			console("     structname[%d]: %s\n", i, ld->structname[i]);
-+		console("	  entries: %lx\n", ld->entries);
-+		for (i = 0; i < ld->entries; i++) {
-+			console("	 entry[%d]: ", i);
-+			for (j = 0; j < ld->e[i]->count; j++) {
-+				snprintf(b, BUFSIZE, "{ member: %s, width: %d, offset: %d }",
-+					 ld->e[i]->member[j], ld->e[i]->width[j], ld->e[i]->offset[j]);
-+				console("%s", b);
-+				console(j == ld->e[i]->count - 1 ? "\n" : ", ");
-+			}
-+		}
- 		console("            header: %s\n", ld->header);
- 		console("          list_ptr: %lx\n", (ulong)ld->list_ptr);
- 		console("     callback_func: %lx\n", (ulong)ld->callback_func);
-@@ -3584,20 +3592,15 @@ do_list(struct list_data *ld)
- 		if (ld->flags & VERBOSE) {
- 			fprintf(fp, "%lx\n", next - ld->list_head_offset);
- 
--			if (ld->structname) {
--				for (i = 0; i < ld->structname_args; i++) {
--					switch (count_chars(ld->structname[i], '.'))
--					{
--					case 0:
--						dump_struct(ld->structname[i], 
-+			for (i = 0; i < ld->entries; i++) {
-+				struct struct_req_entry *e = ld->e[i];
-+				if (e->count == 0)
-+					dump_struct(e->name,
- 							next - ld->list_head_offset - ld->struct_list_offset,
- 							radix);
--						break;
--					default:
--						dump_struct_members(ld, i, next);
--						break;
--					}
--				}
-+				else
-+					dump_struct_members(e, radix,
-+						next - ld->list_head_offset - ld->struct_list_offset);
- 			}
- 		}
- 
-@@ -3689,41 +3692,20 @@ do_list(struct list_data *ld)
-  *            struct.member1,member2,member3
-  */
- void
--dump_struct_members(struct list_data *ld, int idx, ulong next)
-+dump_struct_members(struct struct_req_entry *e, int radix, ulong p)
- {
--	int i, argc;
--	char *p1, *p2;
--	char *structname, *members;
--	char *arglist[MAXARGS];
--	unsigned int radix;
--
--	if (ld->flags & LIST_STRUCT_RADIX_10)
--		radix = 10;
--	else if (ld->flags & LIST_STRUCT_RADIX_16)
--		radix = 16;
--	else
--		radix = 0;
--
--	structname = GETBUF(strlen(ld->structname[idx])+1);
--	members = GETBUF(strlen(ld->structname[idx])+1);
--
--	strcpy(structname, ld->structname[idx]);
--	p1 = strstr(structname, ".") + 1;
--
--	p2 = strstr(ld->structname[idx], ".") + 1;
--	strcpy(members, p2);
--	replace_string(members, ",", ' ');
--	argc = parse_line(members, arglist);
--
--	for (i = 0; i < argc; i++) {
--		*p1 = NULLCHAR;
--		strcat(structname, arglist[i]);
-- 		dump_struct_member(structname, 
--			next - ld->list_head_offset - ld->struct_list_offset, radix);
++void
++dump_struct_members_fast(struct struct_req_entry *e, int radix, ulong p)
++{
 +	unsigned int i;
 +	char b[BUFSIZE];
 +	if (!IS_KVADDR(p))
 +		return;
 +	for (i = 0; i < e->count; i++) {
-+		if (e->ff == FANCY || e->width[i] == 0 || e->width[i] > 8) {
++		if (e->width[i] == 0 || e->width[i] > 8) {
 +			snprintf(b, BUFSIZE, "%s.%s", e->name, e->member[i]);
 +			dump_struct_member(b, p, radix);
 +		} else {
 +			print_value(e->member[i], p + e->offset[i], e->width[i], radix);
 +		}
- 	}
--
--	FREEBUF(structname);
--	FREEBUF(members);
- }
- 
- #define RADIXTREE_REQUEST (0x1)
-@@ -3745,7 +3727,7 @@ cmd_tree()
- 	td = &tree_data;
- 	BZERO(td, sizeof(struct tree_data));
- 
--	while ((c = getopt(argcnt, args, "xdt:r:o:s:pN")) != EOF) {
-+	while ((c = getopt(argcnt, args, "xdt:r:o:s:S:pN")) != EOF) {
- 		switch (c)
- 		{
- 		case 't':
-@@ -3799,9 +3781,14 @@ cmd_tree()
- 			break;
- 
- 		case 's':
--			if (td->structname_args++ == 0) 
--				hq_open();
--			hq_enter((ulong)optarg);
-+		case 'S':
-+			if (td->entries == 8)
-+				error(WARNING, "Too many `-S` arguments."
-+					" Ignoring argument: '%s'\n", optarg);
-+			else {
-+				td->e[td->entries] = fill_member_offsets(optarg);
-+				td->e[td->entries++]->ff = (c == 's' ? FANCY : FAST);
-+			}
- 			break;
- 
- 		case 'p':
-@@ -3878,13 +3865,6 @@ next_arg:
- 		cmd_usage(pc->curcmd, SYNOPSIS);
- 	}
- 
--	if (td->structname_args) {
--		td->structname = (char **)GETBUF(sizeof(char *) *
--				td->structname_args);
--		retrieve_list((ulong *)td->structname, td->structname_args); 
--		hq_close();
--	}
--
- 	if (!(td->flags & TREE_NODE_POINTER))
- 		td->start = td->start + root_offset;
- 
-@@ -3916,7 +3896,7 @@ next_arg:
- 			td->flags & TREE_NODE_POINTER ? "yes" : "no");
- 		fprintf(fp, "             start: %lx\n", td->start);
- 		fprintf(fp, "node_member_offset: %ld\n", td->node_member_offset);
--		fprintf(fp, "   structname_args: %d\n", td->structname_args);
-+		fprintf(fp, "           entries: %d\n", td->entries);
- 		fprintf(fp, "             count: %d\n", td->count);
- 	}
- 
-@@ -3929,15 +3909,62 @@ next_arg:
- 	else
- 		do_rbtree(td);
- 	hq_close();
--
--        if (td->structname_args)
--		FREEBUF(td->structname);
- }
- 
- static ulong RADIX_TREE_MAP_SHIFT = UNINITIALIZED;
- static ulong RADIX_TREE_MAP_SIZE = UNINITIALIZED;
- static ulong RADIX_TREE_MAP_MASK = UNINITIALIZED;
- 
++	}
++}
++
 +static struct struct_req_entry *
 +fill_member_offsets(char *arg)
 +{
@@ -371,111 +178,9 @@ index 2c3aab9..ce70613 100644
 +	return e;
 +}
 +
- int
- do_rdtree(struct tree_data *td)
- {
-@@ -4051,27 +4078,18 @@ rdtree_iteration(ulong node_p, struct tree_data *td, char *ppos, ulong indexnum,
- 			if (td->flags & TREE_POSITION_DISPLAY)
- 				fprintf(fp, "  position: %s/%d\n", pos, index);
- 
--			if (td->structname) {
- 				if (td->flags & TREE_STRUCT_RADIX_10)
- 					print_radix = 10;
- 				else if (td->flags & TREE_STRUCT_RADIX_16)
- 					print_radix = 16;
- 				else
- 					print_radix = 0;
--
--				for (i = 0; i < td->structname_args; i++) {
--					switch(count_chars(td->structname[i], '.'))
--					{
--					case 0:
--						dump_struct(td->structname[i],
--							slot, print_radix);
--						break;
--                                        default:
--						dump_struct_members_for_tree(td, i,
--							slot);
--						break;
--					}
--				}
-+			for (i = 0; i < td->entries; i++) {
-+				struct struct_req_entry *e = td->e[i];
-+				if (e->count == 0)
-+					dump_struct(e->name, slot, print_radix);
-+				else
-+					dump_struct_members(td->e[i], print_radix, slot);
- 			}
- 		} else 
- 			rdtree_iteration(slot, td, pos, index, height-1);
-@@ -4126,7 +4144,6 @@ rbtree_iteration(ulong node_p, struct tree_data *td, char *pos)
- 	if (td->flags & TREE_POSITION_DISPLAY)
- 		fprintf(fp, "  position: %s\n", pos);
- 
--	if (td->structname) {
- 		if (td->flags & TREE_STRUCT_RADIX_10)
- 			print_radix = 10;
- 		else if (td->flags & TREE_STRUCT_RADIX_16)
-@@ -4134,17 +4151,12 @@ rbtree_iteration(ulong node_p, struct tree_data *td, char *pos)
- 		else
- 			print_radix = 0;
- 
--		for (i = 0; i < td->structname_args; i++) {
--			switch(count_chars(td->structname[i], '.'))
--			{
--			case 0:
--				dump_struct(td->structname[i], struct_p, print_radix);
--				break;
--                        default:
--				dump_struct_members_for_tree(td, i, struct_p);
--				break;
--			}
--		}
-+	for (i = 0; i < td->entries; i++) {
-+		struct struct_req_entry *e = td->e[i];
-+		if (e->count == 0)
-+			dump_struct(e->name, struct_p, print_radix);
-+		else
-+			dump_struct_members(td->e[i], print_radix, struct_p);
- 	}
- 
- 	readmem(node_p+OFFSET(rb_node_rb_left), KVADDR, &left_p,
-@@ -4159,40 +4171,31 @@ rbtree_iteration(ulong node_p, struct tree_data *td, char *pos)
- 	rbtree_iteration(right_p, td, right_pos);		
- }
- 
--void
--dump_struct_members_for_tree(struct tree_data *td, int idx, ulong struct_p)
 +static void
 +print_value(char *name, ulong addr, short width, unsigned int radix)
- {
--	int i, argc;
--	uint print_radix;
--	char *p1;
--	char *structname, *members;
--	char *arglist[MAXARGS];
--
--	if (td->flags & TREE_STRUCT_RADIX_10)
--		print_radix = 10;
--	else if (td->flags & TREE_STRUCT_RADIX_16)
--		print_radix = 16;
--	else
--		print_radix = 0;
--
--	structname = GETBUF(strlen(td->structname[idx])+1);
--	members = GETBUF(strlen(td->structname[idx])+1);
--
--	strcpy(structname, td->structname[idx]);
--	p1 = strstr(structname, ".") + 1;
--
--	strcpy(members, p1);
--	replace_string(members, ",", ' ');
--	argc = parse_line(members, arglist);
--
--	for (i = 0; i <argc; i++) {
--		*p1 = NULLCHAR;
--		strcat(structname, arglist[i]);
--		dump_struct_member(structname, struct_p, print_radix);
++{
 +	union { uint64_t v64; uint32_t v32;
 +		uint16_t v16; uint8_t v8;
 +	} v;
@@ -497,10 +202,137 @@ index 2c3aab9..ce70613 100644
 +		case 2: fprintf(fp, fmt, name, v.v16); break;
 +		case 4: fprintf(fp, fmt, name, v.v32); break;
 +		case 8: fprintf(fp, fmt, name, v.v64); break;
- 	}
--
--	FREEBUF(structname);
--	FREEBUF(members);
- }
++ 	}
++}
  
  /*
+  *  Does the work for cmd_list() and any other function that requires the
+@@ -3491,10 +3597,11 @@ next_arg:
+ int
+ do_list(struct list_data *ld)
+ {
+-	ulong next, last, first;
++	ulong next, last, first, offset;
+ 	ulong searchfor, readflag;
+-	int i, count, others, close_hq_on_return;
++	int i, j, count, others, close_hq_on_return;
+ 	unsigned int radix;
++	char b[BUFSIZE];
+ 
+ 	if (CRASHDEBUG(1)) {
+ 		others = 0;
+@@ -3536,6 +3643,16 @@ do_list(struct list_data *ld)
+ 			console("        structname: (unused)\n");
+ 		for (i = 0; i < ld->structname_args; i++)	
+ 			console("     structname[%d]: %s\n", i, ld->structname[i]);
++		console("	  entries: %lx\n", ld->entries);
++		for (i = 0; i < ld->entries; i++) {
++			console("	 entry[%d]: ", i);
++			for (j = 0; j < ld->e[i]->count; j++) {
++				snprintf(b, BUFSIZE, "{ member: %s, width: %d, offset: %d }",
++					 ld->e[i]->member[j], ld->e[i]->width[j], ld->e[i]->offset[j]);
++				console("%s", b);
++				console(j == ld->e[i]->count - 1 ? "\n" : ", ");
++			}
++		}
+ 		console("            header: %s\n", ld->header);
+ 		console("          list_ptr: %lx\n", (ulong)ld->list_ptr);
+ 		console("     callback_func: %lx\n", (ulong)ld->callback_func);
+@@ -3580,6 +3697,7 @@ do_list(struct list_data *ld)
+ 	if (ld->header)
+ 		fprintf(fp, "%s", ld->header);
+ 
++	offset = ld->list_head_offset + ld->struct_list_offset;
+ 	while (1) {
+ 		if (ld->flags & VERBOSE) {
+ 			fprintf(fp, "%lx\n", next - ld->list_head_offset);
+@@ -3589,9 +3707,8 @@ do_list(struct list_data *ld)
+ 					switch (count_chars(ld->structname[i], '.'))
+ 					{
+ 					case 0:
+-						dump_struct(ld->structname[i], 
+-							next - ld->list_head_offset - ld->struct_list_offset,
+-							radix);
++						dump_struct(ld->structname[i],
++							next - offset, radix);
+ 						break;
+ 					default:
+ 						dump_struct_members(ld, i, next);
+@@ -3599,6 +3716,8 @@ do_list(struct list_data *ld)
+ 					}
+ 				}
+ 			}
++			for (i = 0; i < ld->entries; i++)
++				dump_struct_members_fast(ld->e[i], radix, next - offset);
+ 		}
+ 
+                 if (next && !hq_enter(next - ld->list_head_offset)) {
+@@ -3745,7 +3864,7 @@ cmd_tree()
+ 	td = &tree_data;
+ 	BZERO(td, sizeof(struct tree_data));
+ 
+-	while ((c = getopt(argcnt, args, "xdt:r:o:s:pN")) != EOF) {
++	while ((c = getopt(argcnt, args, "xdt:r:o:s:S:pN")) != EOF) {
+ 		switch (c)
+ 		{
+ 		case 't':
+@@ -3804,6 +3923,14 @@ cmd_tree()
+ 			hq_enter((ulong)optarg);
+ 			break;
+ 
++		case 'S':
++			if (td->entries == 8)
++				error(WARNING, "Too many `-S` arguments."
++					" Ignoring argument: '%s'\n", optarg);
++			else
++				td->e[td->entries++] = fill_member_offsets(optarg);
++			break;
++
+ 		case 'p':
+ 			td->flags |= TREE_POSITION_DISPLAY;
+ 			break;
+@@ -3917,6 +4044,7 @@ next_arg:
+ 		fprintf(fp, "             start: %lx\n", td->start);
+ 		fprintf(fp, "node_member_offset: %ld\n", td->node_member_offset);
+ 		fprintf(fp, "   structname_args: %d\n", td->structname_args);
++		fprintf(fp, "           entries: %d\n", td->entries);
+ 		fprintf(fp, "             count: %d\n", td->count);
+ 	}
+ 
+@@ -4031,6 +4159,13 @@ rdtree_iteration(ulong node_p, struct tree_data *td, char *ppos, ulong indexnum,
+ 	else
+ 		sprintf(pos, "%s", ppos);
+ 
++	if (td->flags & TREE_STRUCT_RADIX_10)
++		print_radix = 10;
++	else if (td->flags & TREE_STRUCT_RADIX_16)
++		print_radix = 16;
++	else
++		print_radix = 0;
++
+ 	for (index = 0; index < RADIX_TREE_MAP_SIZE; index++) {
+ 		readmem((ulong)node_p + OFFSET(radix_tree_node_slots) +
+ 			sizeof(void *) * index, KVADDR, &slot, sizeof(void *),
+@@ -4052,13 +4187,6 @@ rdtree_iteration(ulong node_p, struct tree_data *td, char *ppos, ulong indexnum,
+ 				fprintf(fp, "  position: %s/%d\n", pos, index);
+ 
+ 			if (td->structname) {
+-				if (td->flags & TREE_STRUCT_RADIX_10)
+-					print_radix = 10;
+-				else if (td->flags & TREE_STRUCT_RADIX_16)
+-					print_radix = 16;
+-				else
+-					print_radix = 0;
+-
+ 				for (i = 0; i < td->structname_args; i++) {
+ 					switch(count_chars(td->structname[i], '.'))
+ 					{
+@@ -4073,6 +4201,8 @@ rdtree_iteration(ulong node_p, struct tree_data *td, char *ppos, ulong indexnum,
+ 					}
+ 				}
+ 			}
++			for (i = 0; i < td->entries; i++)
++				dump_struct_members_fast(td->e[i], print_radix, slot);
+ 		} else 
+ 			rdtree_iteration(slot, td, pos, index, height-1);
+ 	}
