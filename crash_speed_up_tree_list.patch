@@ -1,14 +1,14 @@
 diff --git a/defs.h b/defs.h
-index d6691a3..f1bb4e2 100644
+index d6691a3..c2c76c2 100644
 --- a/defs.h
 +++ b/defs.h
 @@ -2380,6 +2380,12 @@ struct datatype_member {        /* minimal definition of a structure/union */
  };
  
  #define union_name struct_name
-+struct struct_req_entry {
++struct req_entry {
 +	char *arg, *name;
-+	char **member, *width;
++	char **member, *width, *is_ptr;
 +	short *offset;
 +	unsigned char count;
 +};
@@ -20,7 +20,7 @@ index d6691a3..f1bb4e2 100644
  	void *callback_data;
  	long struct_list_offset;
 +	int entries;
-+	struct struct_req_entry *e[8];
++	struct req_entry **e;
  };
  #define LIST_OFFSET_ENTERED  (VERBOSE << 1)
  #define LIST_START_ENTERED   (VERBOSE << 2)
@@ -29,12 +29,12 @@ index d6691a3..f1bb4e2 100644
  	int structname_args;
  	int count;
 +	int entries;
-+	struct struct_req_entry *e[8];
++	struct req_entry **e;
  };
  
  #define TREE_ROOT_OFFSET_ENTERED  (VERBOSE << 1)
 diff --git a/help.c b/help.c
-index dd1a582..00e7e53 100644
+index dd1a582..337a47e 100644
 --- a/help.c
 +++ b/help.c
 @@ -5254,6 +5254,9 @@ char *help__list[] = {
@@ -42,8 +42,8 @@ index dd1a582..00e7e53 100644
  "               member specifications may extend beyond one level deep by ",
  "               expressing the argument as \"struct.member.member.member...\".",
 +"    -S struct  Do exactly the same thing as `-s`, but instead of parsing gdb output",
-+"               it reads value from memory, therefore it works much faster for"
-+"               1-, 2-, 4-, and 8-bytes fields."
++"               it reads value from memory, therefore it works much faster for",
++"               1-, 2-, 4-, and 8-bytes fields.",
  "    -l offset  Only used in conjunction with -s, if the start address argument",
  "               is a pointer to an embedded list head (or any other similar list",
  "               linkage structure whose first member points to the next linkage",
@@ -52,13 +52,13 @@ index dd1a582..00e7e53 100644
  "             extend beyond one level deep by expressing the struct argument as", 
  "             \"struct.member.member.member...\".",
 +"  -S struct  Do exactly the same thing as `-s`, but instead of parsing gdb output",
-+"             it reads value from memory, therefore it works much faster for"
-+"             1-, 2-, 4-, and 8-bytes fields."
++"             it reads value from memory, therefore it works much faster for",
++"             1-, 2-, 4-, and 8-bytes fields.",
  "         -x  Override default output format with hexadecimal format.",
  "         -d  Override default output format with decimal format.",
  "         -p  Display the node's position information, showing the relationship",
 diff --git a/tools.c b/tools.c
-index 2c3aab9..8466408 100644
+index 2c3aab9..1b5420e 100644
 --- a/tools.c
 +++ b/tools.c
 @@ -27,6 +27,9 @@ static void dump_struct_members(struct list_data *, int, ulong);
@@ -66,12 +66,20 @@ index 2c3aab9..8466408 100644
  static void rdtree_iteration(ulong, struct tree_data *, char *, ulong, uint);
  static void dump_struct_members_for_tree(struct tree_data *, int, ulong);
 +static void print_value(char *, ulong, short, unsigned int);
-+static struct struct_req_entry *fill_member_offsets(char *);
-+static void dump_struct_members_fast(struct struct_req_entry *, int, ulong);
++static struct req_entry *fill_member_offsets(char *);
++static void dump_struct_members_fast(struct req_entry *, int, ulong);
  
  /*
   *  General purpose error reporting routine.  Type INFO prints the message
-@@ -3229,7 +3232,7 @@ cmd_list(void)
+@@ -3222,6 +3225,7 @@ cmd_list(void)
+ 	struct list_data list_data, *ld;
+ 	struct datatype_member struct_member, *sm;
+ 	struct syment *sp;
++	struct req_entry *re;
+ 	ulong value, struct_list_offset; 
+ 
+ 	sm = &struct_member;
+@@ -3229,7 +3233,7 @@ cmd_list(void)
  	BZERO(ld, sizeof(struct list_data));
  	struct_list_offset = 0;
  
@@ -80,26 +88,45 @@ index 2c3aab9..8466408 100644
                  switch(c)
  		{
  		case 'H':
-@@ -3251,6 +3254,14 @@ cmd_list(void)
+@@ -3246,11 +3250,18 @@ cmd_list(void)
+ 			break;
+ 
+ 		case 's':
+-			if (ld->structname_args++ == 0) 
++			if (ld->structname_args++ == 0)
+ 				hq_open();
  			hq_enter((ulong)optarg);
  			break;
  
 +		case 'S':
-+			if (ld->entries == 8)
-+				error(WARNING, "Too many `-S` arguments."
-+				     " Ignoring argument: '%s'\n", optarg);
-+			else
-+				ld->e[ld->entries++] = fill_member_offsets(optarg);
++			re = fill_member_offsets(optarg);
++			if (ld->entries++ == 0)
++				hq_open();
++			hq_enter((ulong)re);
 +			break;
 +
  		case 'l':
                          if (IS_A_NUMBER(optarg))
                                  struct_list_offset = stol(optarg,
-@@ -3318,8 +3329,10 @@ cmd_list(void)
+@@ -3313,13 +3324,24 @@ cmd_list(void)
+ 		cmd_usage(pc->curcmd, SYNOPSIS);
+ 	}
+ 
++	if (ld->structname_args && ld->entries) {
++		error(INFO, "-S and -s options are mutually exclusive");
++		cmd_usage(pc->curcmd, SYNOPSIS);
++	}
++
+ 	if (ld->structname_args) {
+ 		ld->structname = (char **)GETBUF(sizeof(char *) * ld->structname_args);
  		retrieve_list((ulong *)ld->structname, ld->structname_args); 
  		hq_close(); 
  		ld->struct_list_offset = struct_list_offset;
 +	} else if (ld->entries) {
++		ld->e = (struct req_entry **)GETBUF(sizeof (struct req_entry *) *
++			ld->entries);
++		retrieve_list((ulong *)ld->e, ld->entries); 
++		hq_close(); 
 +		ld->struct_list_offset = struct_list_offset;
  	} else if (struct_list_offset) {
 -		error(INFO, "-l option can only be used with -s option\n");
@@ -107,12 +134,12 @@ index 2c3aab9..8466408 100644
  		cmd_usage(pc->curcmd, SYNOPSIS);
  	}
  
-@@ -3483,6 +3496,99 @@ next_arg:
+@@ -3483,6 +3505,102 @@ next_arg:
  		FREEBUF(ld->structname);
  }
  
 +void
-+dump_struct_members_fast(struct struct_req_entry *e, int radix, ulong p)
++dump_struct_members_fast(struct req_entry *e, int radix, ulong p)
 +{
 +	unsigned int i;
 +	char b[BUFSIZE];
@@ -123,24 +150,25 @@ index 2c3aab9..8466408 100644
 +			snprintf(b, BUFSIZE, "%s.%s", e->name, e->member[i]);
 +			dump_struct_member(b, p, radix);
 +		} else {
-+			print_value(e->member[i], p + e->offset[i], e->width[i], radix);
++			print_value(e->member[i], p + e->offset[i], e->width[i],
++				    e->is_ptr[i] ? 16 : radix);
 +		}
 +	}
 +}
 +
-+static struct struct_req_entry *
++static struct req_entry *
 +fill_member_offsets(char *arg)
 +{
 +	int j;
 +	char *p, m;
-+	struct struct_req_entry *e;
++	struct req_entry *e;
 +	char b[BUFSIZE];
 +
 +	if (!(arg && *arg))
 +		return NULL;
 +
 +	j = count_chars(arg, ',') + 1;
-+	e = (struct struct_req_entry *)GETBUF(sizeof(*e));
++	e = (struct req_entry *)GETBUF(sizeof(*e));
 +
 +	e->arg = GETBUF(strlen(arg + 1));
 +	strcpy(e->arg, arg);
@@ -157,6 +185,7 @@ index 2c3aab9..8466408 100644
 +
 +	e->count  = count_chars(p, ',') + 1;
 +	e->width  = GETBUF(e->count);
++	e->is_ptr = GETBUF(e->count);
 +	e->member = (char **)GETBUF(e->count * sizeof(char *));
 +	e->offset = (short *)GETBUF(e->count * sizeof(short));
 +
@@ -170,6 +199,7 @@ index 2c3aab9..8466408 100644
 +		if (e->offset[j] == -1)
 +			break;
 +
++		e->is_ptr[j] = MEMBER_TYPE(e->name, e->member[j]) == TYPE_CODE_PTR;
 +		// Dirty hack for obtaining size of particular field
 +		snprintf(b, BUFSIZE, "%s + 1", e->member[j]);
 +		e->width[j] = ANON_MEMBER_OFFSET(e->name, b) - e->offset[j];
@@ -202,12 +232,12 @@ index 2c3aab9..8466408 100644
 +		case 2: fprintf(fp, fmt, name, v.v16); break;
 +		case 4: fprintf(fp, fmt, name, v.v32); break;
 +		case 8: fprintf(fp, fmt, name, v.v64); break;
-+ 	}
++	}
 +}
  
  /*
   *  Does the work for cmd_list() and any other function that requires the
-@@ -3491,10 +3597,11 @@ next_arg:
+@@ -3491,10 +3609,11 @@ next_arg:
  int
  do_list(struct list_data *ld)
  {
@@ -221,7 +251,7 @@ index 2c3aab9..8466408 100644
  
  	if (CRASHDEBUG(1)) {
  		others = 0;
-@@ -3536,6 +3643,16 @@ do_list(struct list_data *ld)
+@@ -3536,6 +3655,16 @@ do_list(struct list_data *ld)
  			console("        structname: (unused)\n");
  		for (i = 0; i < ld->structname_args; i++)	
  			console("     structname[%d]: %s\n", i, ld->structname[i]);
@@ -238,7 +268,7 @@ index 2c3aab9..8466408 100644
  		console("            header: %s\n", ld->header);
  		console("          list_ptr: %lx\n", (ulong)ld->list_ptr);
  		console("     callback_func: %lx\n", (ulong)ld->callback_func);
-@@ -3580,6 +3697,7 @@ do_list(struct list_data *ld)
+@@ -3580,6 +3709,7 @@ do_list(struct list_data *ld)
  	if (ld->header)
  		fprintf(fp, "%s", ld->header);
  
@@ -246,7 +276,7 @@ index 2c3aab9..8466408 100644
  	while (1) {
  		if (ld->flags & VERBOSE) {
  			fprintf(fp, "%lx\n", next - ld->list_head_offset);
-@@ -3589,9 +3707,8 @@ do_list(struct list_data *ld)
+@@ -3589,9 +3719,8 @@ do_list(struct list_data *ld)
  					switch (count_chars(ld->structname[i], '.'))
  					{
  					case 0:
@@ -258,7 +288,7 @@ index 2c3aab9..8466408 100644
  						break;
  					default:
  						dump_struct_members(ld, i, next);
-@@ -3599,6 +3716,8 @@ do_list(struct list_data *ld)
+@@ -3599,6 +3728,8 @@ do_list(struct list_data *ld)
  					}
  				}
  			}
@@ -267,7 +297,15 @@ index 2c3aab9..8466408 100644
  		}
  
                  if (next && !hq_enter(next - ld->list_head_offset)) {
-@@ -3745,7 +3864,7 @@ cmd_tree()
+@@ -3737,6 +3868,7 @@ cmd_tree()
+ 	struct tree_data tree_data, *td;
+ 	struct datatype_member struct_member, *sm;
+ 	struct syment *sp;
++	struct req_entry *re;
+ 	ulong value;
+ 
+ 	type_flag = 0;
+@@ -3745,7 +3877,7 @@ cmd_tree()
  	td = &tree_data;
  	BZERO(td, sizeof(struct tree_data));
  
@@ -276,22 +314,43 @@ index 2c3aab9..8466408 100644
  		switch (c)
  		{
  		case 't':
-@@ -3804,6 +3923,14 @@ cmd_tree()
+@@ -3804,6 +3936,13 @@ cmd_tree()
  			hq_enter((ulong)optarg);
  			break;
  
 +		case 'S':
-+			if (td->entries == 8)
-+				error(WARNING, "Too many `-S` arguments."
-+					" Ignoring argument: '%s'\n", optarg);
-+			else
-+				td->e[td->entries++] = fill_member_offsets(optarg);
++			re = fill_member_offsets(optarg);
++			if (td->entries++ == 0)
++				hq_open();
++			hq_enter((ulong)re);
 +			break;
 +
  		case 'p':
  			td->flags |= TREE_POSITION_DISPLAY;
  			break;
-@@ -3917,6 +4044,7 @@ next_arg:
+@@ -3878,11 +4017,21 @@ next_arg:
+ 		cmd_usage(pc->curcmd, SYNOPSIS);
+ 	}
+ 
++	if (td->structname_args && td->entries) {
++		error(INFO, "-S and -s options are mutually exclusive");
++		cmd_usage(pc->curcmd, SYNOPSIS);
++	}
++
+ 	if (td->structname_args) {
+ 		td->structname = (char **)GETBUF(sizeof(char *) *
+ 				td->structname_args);
+ 		retrieve_list((ulong *)td->structname, td->structname_args); 
+ 		hq_close();
++	} else if (td->entries) {
++		td->e = (struct req_entry **)GETBUF(sizeof (struct req_entry *) *
++			td->entries);
++		retrieve_list((ulong *)td->e, td->entries); 
++		hq_close(); 
+ 	}
+ 
+ 	if (!(td->flags & TREE_NODE_POINTER))
+@@ -3917,6 +4066,7 @@ next_arg:
  		fprintf(fp, "             start: %lx\n", td->start);
  		fprintf(fp, "node_member_offset: %ld\n", td->node_member_offset);
  		fprintf(fp, "   structname_args: %d\n", td->structname_args);
@@ -299,7 +358,7 @@ index 2c3aab9..8466408 100644
  		fprintf(fp, "             count: %d\n", td->count);
  	}
  
-@@ -4031,6 +4159,13 @@ rdtree_iteration(ulong node_p, struct tree_data *td, char *ppos, ulong indexnum,
+@@ -4031,6 +4181,13 @@ rdtree_iteration(ulong node_p, struct tree_data *td, char *ppos, ulong indexnum,
  	else
  		sprintf(pos, "%s", ppos);
  
@@ -313,7 +372,7 @@ index 2c3aab9..8466408 100644
  	for (index = 0; index < RADIX_TREE_MAP_SIZE; index++) {
  		readmem((ulong)node_p + OFFSET(radix_tree_node_slots) +
  			sizeof(void *) * index, KVADDR, &slot, sizeof(void *),
-@@ -4052,13 +4187,6 @@ rdtree_iteration(ulong node_p, struct tree_data *td, char *ppos, ulong indexnum,
+@@ -4052,13 +4209,6 @@ rdtree_iteration(ulong node_p, struct tree_data *td, char *ppos, ulong indexnum,
  				fprintf(fp, "  position: %s/%d\n", pos, index);
  
  			if (td->structname) {
@@ -327,7 +386,7 @@ index 2c3aab9..8466408 100644
  				for (i = 0; i < td->structname_args; i++) {
  					switch(count_chars(td->structname[i], '.'))
  					{
-@@ -4073,6 +4201,8 @@ rdtree_iteration(ulong node_p, struct tree_data *td, char *ppos, ulong indexnum,
+@@ -4073,6 +4223,8 @@ rdtree_iteration(ulong node_p, struct tree_data *td, char *ppos, ulong indexnum,
  					}
  				}
  			}
