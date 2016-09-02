@@ -52,6 +52,46 @@ index dd1a582..337a47e 100644
  "         -x  Override default output format with hexadecimal format.",
  "         -d  Override default output format with decimal format.",
  "         -p  Display the node's position information, showing the relationship",
+diff --git a/symbols.c b/symbols.c
+index 6d8ea7d..a60f4ef 100644
+--- a/symbols.c
++++ b/symbols.c
+@@ -6436,6 +6436,35 @@ do_datatype_addr(struct datatype_member *dm, ulong addr, int count,
+         }
+ }
+ 
++char
++is_string(char *s, char *m)
++{
++        char *t, r = 0;
++        char b[BUFSIZE];
++
++        open_tmpfile();
++        whatis_datatype(s, STRUCT_REQUEST, pc->tmpfile);
++        rewind(pc->tmpfile);
++        while (fgets(b, BUFSIZE, pc->tmpfile)) {
++                if (!(t = strstr(b, "char ")))
++                        continue;
++                t += 5;
++                if (*t == '*')
++                    t++;
++                if (t != strstr(t, m))
++                    continue;
++                t += strlen(m);
++                if (*t == ';' || *t == '[') {
++                        r = 1;
++                        break;
++                }
++        }
++
++        close_tmpfile();
++
++        return r;
++}
++
+ 
+ /*
+  *  Generic function for dumping data structure declarations, with a small
 diff --git a/tools.c b/tools.c
 index 2c3aab9..9bfe021 100644
 --- a/tools.c
